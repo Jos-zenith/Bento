@@ -5,12 +5,26 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bento-backend"
 version = "0.1.0"
-description = "FastAPI backend scaffold for Bento"
+description = "FastAPI backend scaffold for Bento with PyTorch CV emotion recognition"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.30.0",
   "pydantic-settings>=2.4.0",
+  # PyTorch and Vision
+  "torch>=2.0.0",
+  "torchvision>=0.15.0",
+  # Computer Vision and Image Processing
+  "opencv-python>=4.8.0",
+  "Pillow>=10.0.0",
+  # Scientific Computing
+  "numpy>=1.24.0",
+  "scipy>=1.11.0",
+  # Training and Utilities
+  "tqdm>=4.66.0",
+  "pydantic>=2.0.0",
+  # Logging and Monitoring
+  "tensorboard>=2.14.0",
 ]
 
 [tool.setuptools]
