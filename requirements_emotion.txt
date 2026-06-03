@@ -1,0 +1,24 @@
+# Core dependencies
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.24.0
+scipy>=1.11.0
+
+# Computer Vision
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.0.0
+pydantic-settings>=2.4.0
+
+# Training and utilities
+tqdm>=4.66.0
+tensorboard>=2.14.0
+pandas>=2.1.0
+
+# Optional: for advanced features
+matplotlib>=3.8.0  # Visualization
+scikit-learn>=1.3.0  # Metrics and clustering

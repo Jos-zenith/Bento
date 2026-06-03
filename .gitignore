@@ -1,0 +1,20 @@
+__pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+node_modules/
+.DS_Store
+.env
+.env.*
+*.log
+Qwen2.5-VL-7B-Instruct/
+CASME Ⅱ/CASME2_Compressed video/
+CASME Ⅱ/CASME2_RAW/
+CASME Ⅱ/CASME2_RAW_selected/
+CASME Ⅱ/Cropped/
+CASME Ⅱ/checkpoints/
+CASME Ⅱ/logs/
+CASME Ⅱ/optical_flow_cache/

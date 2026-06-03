@@ -1,0 +1,4 @@
+Considering the ambiguity of the micro-expressions, it is also reasonable to categorize these micro-expressions into 4 classes: positive, negative, surprise, others.
+
+Such classification may be more easily applied in practice. Positive contains happy micro-expression, which indicates ¡±good¡± emotion for the individual. Negative contains disgust, sadness and fear, which are usually reflected as ¡±bad¡± emotions. Surprise usually occurs when there is a difference between expectations and reality, and can be neutral/moderate, pleasant, unpleasant, positive, or negative. Tense and repression indicate the ambiguous feelings of an individual and require further inference, thus were categorized into another class. 
+
