@@ -41,7 +41,7 @@ def estimate_batch_memory(
     batch_size: int,
     temporal_length: int = 12,
     frame_size: tuple = (224, 224),
-    input_channels: int = 4,  # RGB + Optical Flow
+    input_channels: int = 7,  # RGB + Combined Optical Flow
     model_params: int = 7_200_000,  # ~7.2M after unidirectional LSTM
 ) -> float:
     """
@@ -130,7 +130,7 @@ def run_memory_benchmark():
             model_type=Config.MODEL_TYPE,
             num_classes=Config.NUM_CLASSES,
             temporal_length=Config.TEMPORAL_LENGTH,
-            input_channels=4,
+            input_channels=Config.MODEL_INPUT_CHANNELS,
             pretrained_backbone=False,  # Don't load pretrained weights
             freeze_backbone=False,
             device=device,
@@ -149,7 +149,7 @@ def run_memory_benchmark():
             batch = torch.randn(
                 bs,
                 Config.TEMPORAL_LENGTH,
-                4,
+                Config.MODEL_INPUT_CHANNELS,
                 Config.FRAME_SIZE[0],
                 Config.FRAME_SIZE[1],
                 device=device,

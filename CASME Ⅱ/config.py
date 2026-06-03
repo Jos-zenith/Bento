@@ -35,6 +35,8 @@ class Config:
     FRAME_SIZE = (224, 224)  # EfficientNet-B0 input size
     TEMPORAL_LENGTH = 12  # Sample 12 frames from onset to apex
     NUM_CLASSES = 5  # Happiness, Surprise, Disgust, Repression, Others
+    MODEL_INPUT_CHANNELS = 7  # RGB (3) + Combined Optical Flow (4)
+    USE_COMBINED_OPTICAL_FLOW = True
     
     CLASS_MAPPING = {
         'Happiness': 0,
@@ -46,7 +48,7 @@ class Config:
     REVERSE_CLASS_MAPPING = {v: k for k, v in CLASS_MAPPING.items()}
     
     # ===================== MODEL =====================
-    MODEL_TYPE = "3d_cnn_lstm"  # Options: "3d_cnn", "3d_cnn_lstm"
+    MODEL_TYPE = "3d_resnet_ms"  # Options: "3d_cnn", "3d_cnn_lstm", "3d_resnet_ms"
     BACKBONE = "efficientnet_b0"
     
     # 3D-CNN-LSTM Architecture
@@ -96,7 +98,7 @@ class Config:
     
     # ===================== PREPROCESSING =====================
     NORMALIZE_OPTICAL_FLOW = True
-    OPTICAL_FLOW_METHOD = "lucas_kanade"  # Options: "lucas_kanade", "farneback"
+    OPTICAL_FLOW_METHOD = "farneback"  # Options: "lucas_kanade", "farneback"
     CLIP_OPTICAL_FLOW = True
     FLOW_CLIPPING_VALUE = 20.0
     

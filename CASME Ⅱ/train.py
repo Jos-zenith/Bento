@@ -76,7 +76,7 @@ class Trainer:
             model_type=config.MODEL_TYPE,
             num_classes=config.NUM_CLASSES,
             temporal_length=config.TEMPORAL_LENGTH,
-            input_channels=4,  # RGB + Optical Flow
+            input_channels=config.MODEL_INPUT_CHANNELS,  # RGB + Combined Optical Flow
             pretrained_backbone=config.PRETRAINED_BACKBONE,
             freeze_backbone=config.FREEZE_BACKBONE_EPOCHS > 0,
             device=self.device,

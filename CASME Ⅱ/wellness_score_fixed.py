@@ -26,6 +26,17 @@ class SentimentResult:
 
 
 @dataclass
+class LateFusionResult:
+    """Result from weighted late fusion between visual and language sentiment."""
+    visual_probability: float
+    text_probability: float
+    audio_probability: Optional[float]
+    emotional_intelligence_score: float
+    emotional_dissonance: bool
+    dissonance_reason: str
+
+
+@dataclass
 class WellnessScore:
     """Composite wellness engagement score"""
     affective_score: float
@@ -33,6 +44,9 @@ class WellnessScore:
     cultural_alignment_score: float
     overall_wellness_score: float
     breakdown: Dict[str, float]
+    late_fusion_score: float = 0.0
+    emotional_dissonance: bool = False
+    dissonance_reason: str = ""
 
 
 class WellnessScoreCalculator:
@@ -132,6 +146,107 @@ class WellnessScoreCalculator:
         """
         # Typically already in [-1, 1] range
         return np.clip(sentiment_result.sentiment_score, -1.0, 1.0)
+
+    def compute_multimodal_sentiment_score(
+        self,
+        sentiment_result: Optional[SentimentResult] = None,
+        audio_sentiment_result: Optional[SentimentResult] = None,
+        text_weight: float = 0.7,
+        audio_weight: float = 0.3,
+    ) -> float:
+        """Combine text and audio sentiment into one sentiment score."""
+        scores = []
+        weights = []
+
+        if sentiment_result is not None:
+            scores.append(self.compute_sentiment_score(sentiment_result) * float(np.clip(sentiment_result.confidence, 0.0, 1.0)))
+            weights.append(text_weight)
+
+        if audio_sentiment_result is not None:
+            scores.append(self.compute_sentiment_score(audio_sentiment_result) * float(np.clip(audio_sentiment_result.confidence, 0.0, 1.0)))
+            weights.append(audio_weight)
+
+        if not scores:
+            return 0.0
+
+        weights_array = np.array(weights, dtype=np.float32)
+        weights_array = weights_array / max(weights_array.sum(), 1e-6)
+        return float(np.sum(np.array(scores, dtype=np.float32) * weights_array))
+
+    def detect_emotional_dissonance(
+        self,
+        micro_expr_result: MicroExpressionResult,
+        sentiment_score: float,
+        visual_threshold: float = 0.18,
+        sentiment_threshold: float = 0.18,
+    ) -> Tuple[bool, str]:
+        """Flag contradictory positive/negative cues between vision and language."""
+        visual_score = self.compute_affective_score(micro_expr_result)
+        visual_polarity = int(np.sign(visual_score))
+        text_polarity = int(np.sign(sentiment_score))
+
+        if abs(visual_score) < visual_threshold or abs(sentiment_score) < sentiment_threshold:
+            return False, ""
+
+        if visual_polarity == 0 or text_polarity == 0 or visual_polarity == text_polarity:
+            return False, ""
+
+        visual_label = micro_expr_result.emotion_class
+        text_label = "positive" if sentiment_score > 0 else "negative"
+        reason = f"Visual micro-expression '{visual_label}' conflicts with {text_label} text/audio sentiment ({sentiment_score:.2f})."
+        return True, reason
+
+    def weighted_late_fusion(
+        self,
+        micro_expr_result: MicroExpressionResult,
+        sentiment_result: Optional[SentimentResult] = None,
+        audio_sentiment_result: Optional[SentimentResult] = None,
+        visual_weight: float = 0.6,
+        text_weight: float = 0.4,
+        text_audio_weight: float = 0.7,
+        audio_weight: float = 0.3,
+    ) -> LateFusionResult:
+        """Compute the weighted late fusion score from visual and sentiment cues."""
+        visual_probability = float(np.clip(micro_expr_result.confidence, 0.0, 1.0))
+        visual_valence = float(self.emotion_valence.get(micro_expr_result.emotion_class, 0.0))
+        visual_signal = visual_probability * visual_valence
+
+        text_probability = 0.0
+        audio_probability = None
+
+        if sentiment_result is not None:
+            text_probability = float(self.compute_sentiment_score(sentiment_result)) * float(np.clip(sentiment_result.confidence, 0.0, 1.0))
+
+        if audio_sentiment_result is not None:
+            audio_probability = float(self.compute_sentiment_score(audio_sentiment_result)) * float(np.clip(audio_sentiment_result.confidence, 0.0, 1.0))
+
+        if audio_probability is not None:
+            combined_text_signal = self.compute_multimodal_sentiment_score(
+                sentiment_result=sentiment_result,
+                audio_sentiment_result=audio_sentiment_result,
+                text_weight=text_audio_weight,
+                audio_weight=audio_weight,
+            )
+        else:
+            combined_text_signal = text_probability
+
+        emotional_intelligence_score = (
+            visual_weight * visual_signal + text_weight * combined_text_signal
+        )
+
+        emotional_dissonance, dissonance_reason = self.detect_emotional_dissonance(
+            micro_expr_result,
+            combined_text_signal,
+        )
+
+        return LateFusionResult(
+            visual_probability=visual_signal,
+            text_probability=combined_text_signal,
+            audio_probability=audio_probability,
+            emotional_intelligence_score=float(np.clip(emotional_intelligence_score, -1.0, 1.0)),
+            emotional_dissonance=emotional_dissonance,
+            dissonance_reason=dissonance_reason,
+        )
     
     def compute_cultural_alignment(
         self,
@@ -176,6 +291,7 @@ class WellnessScoreCalculator:
         micro_expr_result: MicroExpressionResult,
         sentiment_result: Optional[SentimentResult] = None,
         cultural_text: Optional[str] = None,
+        audio_sentiment_result: Optional[SentimentResult] = None,
     ) -> WellnessScore:
         """
         Calculate overall wellness engagement score.
@@ -192,10 +308,20 @@ class WellnessScoreCalculator:
         """
         # Affective score (always computed)
         affective_score = self.compute_affective_score(micro_expr_result)
+
+        # Weighted late fusion for contradiction detection and emotional intelligence
+        fusion_result = self.weighted_late_fusion(
+            micro_expr_result,
+            sentiment_result=sentiment_result,
+            audio_sentiment_result=audio_sentiment_result,
+        )
         
         # Sentiment score
         if sentiment_result is not None:
-            sentiment_score = self.compute_sentiment_score(sentiment_result)
+            sentiment_score = self.compute_multimodal_sentiment_score(
+                sentiment_result=sentiment_result,
+                audio_sentiment_result=audio_sentiment_result,
+            )
         else:
             # Fallback to affective score if sentiment not provided
             sentiment_score = affective_score
@@ -223,10 +349,17 @@ class WellnessScoreCalculator:
             sentiment_score=sentiment_score,
             cultural_alignment_score=cultural_alignment_score,
             overall_wellness_score=overall_wellness_score,
+            late_fusion_score=fusion_result.emotional_intelligence_score,
+            emotional_dissonance=fusion_result.emotional_dissonance,
+            dissonance_reason=fusion_result.dissonance_reason,
             breakdown={
                 'affective_component': self.alpha * affective_normalized,
                 'sentiment_component': self.beta * sentiment_normalized,
                 'cultural_component': self.gamma * cultural_alignment_score,
+                'visual_probability': fusion_result.visual_probability,
+                'text_probability': fusion_result.text_probability,
+                'late_fusion_score': fusion_result.emotional_intelligence_score,
+                'emotional_dissonance': float(fusion_result.emotional_dissonance),
             }
         )
     
@@ -251,7 +384,12 @@ class WellnessScoreCalculator:
         else:
             return "Critical wellness concern - Immediate intervention may be needed"
     
-    def generate_coaching_insights(self, micro_expr_result: MicroExpressionResult) -> Dict[str, str]:
+    def generate_coaching_insights(
+        self,
+        micro_expr_result: MicroExpressionResult,
+        sentiment_result: Optional[SentimentResult] = None,
+        audio_sentiment_result: Optional[SentimentResult] = None,
+    ) -> Dict[str, str]:
         """
         Generate coaching insights based on detected micro-expressions.
         
@@ -261,6 +399,23 @@ class WellnessScoreCalculator:
         Returns:
             Dictionary with coaching recommendations
         """
+        if sentiment_result is not None or audio_sentiment_result is not None:
+            fusion_result = self.weighted_late_fusion(
+                micro_expr_result,
+                sentiment_result=sentiment_result,
+                audio_sentiment_result=audio_sentiment_result,
+            )
+            if fusion_result.emotional_dissonance:
+                return {
+                    'insight': 'Emotional dissonance detected',
+                    'recommendation': 'Pause and explore the gap between what was said and what was felt.',
+                    'coaching_script': (
+                        'I notice your words sound positive, but your expression suggests some discomfort. '
+                        'What feels unresolved or vulnerable beneath that?'
+                    ),
+                    'dissonance_reason': fusion_result.dissonance_reason,
+                }
+
         emotion = micro_expr_result.emotion_class
         
         coaching_insights = {

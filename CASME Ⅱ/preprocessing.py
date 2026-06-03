@@ -94,6 +94,119 @@ class OpticalFlowProcessor:
         mag = np.clip(mag, 0, self.clip_value)
         mag = mag / (self.clip_value + 1e-6)
         return mag
+
+    def normalize_flow_components(self, flow: np.ndarray) -> np.ndarray:
+        """Normalize horizontal and vertical flow components to [-1, 1]."""
+        flow = np.asarray(flow, dtype=np.float32)
+        flow = np.clip(flow, -self.clip_value, self.clip_value)
+        return flow / (self.clip_value + 1e-6)
+
+    @staticmethod
+    def _sample_indices(total_frames: int, target_length: int) -> np.ndarray:
+        if total_frames <= 0:
+            return np.zeros((target_length,), dtype=int)
+        if total_frames >= target_length:
+            return np.linspace(0, total_frames - 1, target_length, dtype=int)
+
+        padding = np.full((target_length - total_frames,), total_frames - 1, dtype=int)
+        return np.concatenate([np.arange(total_frames, dtype=int), padding])
+
+    @staticmethod
+    def _to_zero_based_index(index: int, total_frames: int) -> int:
+        return max(0, min(int(index) - 1, total_frames - 1))
+
+    def _build_phase_flow_sequence(
+        self,
+        phase_frames: np.ndarray,
+        temporal_length: int,
+        phase_start: int,
+        phase_end: int,
+    ) -> np.ndarray:
+        """Build a flow tensor for one expression phase."""
+        height, width = phase_frames.shape[1:3]
+        flow_sequence = np.zeros((temporal_length, height, width, 2), dtype=np.float32)
+
+        if len(phase_frames) < 2:
+            return flow_sequence
+
+        last_written_index = -1
+        pair_count = min(len(phase_frames) - 1, temporal_length - phase_start)
+        for local_index in range(pair_count):
+            global_index = phase_start + local_index
+            if global_index >= temporal_length:
+                break
+
+            frame_a = np.clip(phase_frames[local_index], 0, 255).astype(np.uint8)
+            frame_b = np.clip(phase_frames[local_index + 1], 0, 255).astype(np.uint8)
+            flow = self.compute_flow(frame_a, frame_b)
+            flow_sequence[global_index] = self.normalize_flow_components(flow)
+            last_written_index = global_index
+
+        if last_written_index >= 0:
+            pad_index = min(max(phase_end, phase_start), temporal_length - 1)
+            flow_sequence[pad_index] = flow_sequence[last_written_index]
+
+        return flow_sequence
+
+    def compute_combined_optical_flow(
+        self,
+        frames: np.ndarray,
+        onset_frame: int,
+        apex_frame: int,
+        offset_frame: int,
+        temporal_length: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Build COF features from onset-to-apex and apex-to-offset phases."""
+        if frames.ndim != 4:
+            raise ValueError(f"Expected frames with shape (T, H, W, C), got {frames.shape}")
+
+        total_frames = len(frames)
+        onset_index = self._to_zero_based_index(onset_frame, total_frames)
+        apex_index = self._to_zero_based_index(apex_frame, total_frames)
+        offset_index = self._to_zero_based_index(offset_frame, total_frames)
+
+        if onset_index > apex_index:
+            onset_index = apex_index
+        if apex_index > offset_index:
+            apex_index = offset_index
+        if onset_index > offset_index:
+            onset_index = offset_index
+
+        expression_frames = frames[onset_index : offset_index + 1]
+        if len(expression_frames) == 0:
+            expression_frames = frames
+
+        sampled_indices = self._sample_indices(len(expression_frames), temporal_length)
+        sampled_frames = expression_frames[sampled_indices]
+
+        if len(expression_frames) > 1:
+            relative_apex = max(0, apex_index - onset_index)
+            sampled_apex_index = int(
+                round(relative_apex / max(len(expression_frames) - 1, 1) * (temporal_length - 1))
+            )
+        else:
+            sampled_apex_index = 0
+
+        sampled_apex_index = max(0, min(sampled_apex_index, temporal_length - 1))
+
+        onset_frames = sampled_frames[: sampled_apex_index + 1]
+        offset_frames = sampled_frames[sampled_apex_index:]
+
+        onset_flow = self._build_phase_flow_sequence(
+            onset_frames,
+            temporal_length=temporal_length,
+            phase_start=0,
+            phase_end=sampled_apex_index,
+        )
+        offset_flow = self._build_phase_flow_sequence(
+            offset_frames,
+            temporal_length=temporal_length,
+            phase_start=sampled_apex_index,
+            phase_end=temporal_length - 1,
+        )
+
+        combined_flow = np.concatenate([onset_flow, offset_flow], axis=-1)
+        return sampled_frames.astype(np.float32), combined_flow
     
     def flow_to_hsv(self, flow: np.ndarray) -> np.ndarray:
         """Convert optical flow to HSV visualization (for debugging)"""

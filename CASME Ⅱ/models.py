@@ -95,7 +95,7 @@ class CASME2_3DCNN_LSTM(nn.Module):
         self,
         num_classes: int = 5,
         temporal_length: int = 12,
-        input_channels: int = 4,  # RGB + Optical Flow
+        input_channels: int = 7,  # RGB + Combined Optical Flow
         lstm_hidden_dim: int = 256,
         lstm_num_layers: int = 2,
         lstm_dropout: float = 0.3,
@@ -224,7 +224,7 @@ class CASME2_3DCNN(nn.Module):
         self,
         num_classes: int = 5,
         temporal_length: int = 12,
-        input_channels: int = 4,
+        input_channels: int = 7,
         fc_hidden_dims: Optional[List[int]] = None,
         dropout_rate: float = 0.4,
         pretrained_backbone: bool = True,
@@ -281,11 +281,143 @@ class CASME2_3DCNN(nn.Module):
         return logits
 
 
+class MultiScale3DResBlock(nn.Module):
+    """Residual 3D block with parallel 3x3x3, 5x5x5, and 7x7x7 branches."""
+
+    def __init__(self, in_channels: int, out_channels: int, stride: Tuple[int, int, int] = (1, 1, 1)):
+        super().__init__()
+
+        branch_channels = max(out_channels // 3, 16)
+
+        def branch(kernel_size: int) -> nn.Sequential:
+            padding = kernel_size // 2
+            return nn.Sequential(
+                nn.Conv3d(
+                    in_channels,
+                    branch_channels,
+                    kernel_size=(kernel_size, kernel_size, kernel_size),
+                    stride=stride,
+                    padding=(padding, padding, padding),
+                    bias=False,
+                ),
+                nn.BatchNorm3d(branch_channels),
+                nn.ReLU(inplace=True),
+            )
+
+        self.branch3 = branch(3)
+        self.branch5 = branch(5)
+        self.branch7 = branch(7)
+
+        self.merge = nn.Sequential(
+            nn.Conv3d(branch_channels * 3, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm3d(out_channels),
+        )
+
+        if stride != (1, 1, 1) or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv3d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm3d(out_channels),
+            )
+        else:
+            self.shortcut = nn.Identity()
+
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = self.shortcut(x)
+        x = torch.cat([self.branch3(x), self.branch5(x), self.branch7(x)], dim=1)
+        x = self.merge(x)
+        x = x + residual
+        return self.relu(x)
+
+
+class CASME2_3DResNetMS(nn.Module):
+    """
+    Multi-scale 3D-ResNet for micro-expression classification.
+
+    Uses residual 3D blocks with parallel 3x3x3, 5x5x5, and 7x7x7 kernels to
+    capture fine facial motion at multiple temporal and spatial scales.
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 5,
+        temporal_length: int = 12,
+        input_channels: int = 7,
+        base_channels: int = 64,
+        block_counts: Tuple[int, int, int, int] = (2, 2, 2, 2),
+        dropout_rate: float = 0.4,
+    ):
+        super().__init__()
+
+        self.temporal_length = temporal_length
+        self.num_classes = num_classes
+
+        self.stem = nn.Sequential(
+            nn.Conv3d(
+                input_channels,
+                base_channels,
+                kernel_size=(3, 7, 7),
+                stride=(1, 2, 2),
+                padding=(1, 3, 3),
+                bias=False,
+            ),
+            nn.BatchNorm3d(base_channels),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
+        )
+
+        self.stage1 = self._make_stage(base_channels, base_channels, block_counts[0])
+        self.stage2 = self._make_stage(base_channels, base_channels * 2, block_counts[1], stride=(1, 2, 2))
+        self.stage3 = self._make_stage(base_channels * 2, base_channels * 4, block_counts[2], stride=(1, 2, 2))
+        self.stage4 = self._make_stage(base_channels * 4, base_channels * 8, block_counts[3], stride=(1, 2, 2))
+
+        self.global_pool = nn.AdaptiveAvgPool3d((1, 1, 1))
+
+        feature_dim = base_channels * 8
+        self.classifier = nn.Sequential(
+            nn.Linear(feature_dim, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_rate),
+            nn.Linear(128, num_classes),
+        )
+
+    def _make_stage(
+        self,
+        in_channels: int,
+        out_channels: int,
+        num_blocks: int,
+        stride: Tuple[int, int, int] = (1, 1, 1),
+    ) -> nn.Sequential:
+        blocks = [MultiScale3DResBlock(in_channels, out_channels, stride=stride)]
+        for _ in range(1, num_blocks):
+            blocks.append(MultiScale3DResBlock(out_channels, out_channels))
+        return nn.Sequential(*blocks)
+
+    def forward(self, x: torch.Tensor, return_features: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        x = x.permute(0, 2, 1, 3, 4)
+        x = self.stem(x)
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.stage4(x)
+        x = self.global_pool(x).flatten(1)
+        features = x
+        logits = self.classifier(features)
+
+        if return_features:
+            return logits, features
+        return logits
+
+
 def build_model(
-    model_type: str = "3d_cnn_lstm",
+    model_type: str = "3d_resnet_ms",
     num_classes: int = 5,
     temporal_length: int = 12,
-    input_channels: int = 4,
+    input_channels: int = 7,
     pretrained_backbone: bool = True,
     freeze_backbone: bool = False,
     device: Optional[torch.device] = None,
@@ -294,10 +426,10 @@ def build_model(
     Build and return the specified model.
     
     Args:
-        model_type: 'cnn' for 3D-CNN, 'lstm' for 3D-CNN-LSTM
+        model_type: '3d_cnn', '3d_cnn_lstm', or '3d_resnet_ms'
         num_classes: Number of emotion classes
         temporal_length: Number of frames
-        input_channels: Number of input channels (3 for RGB, 4 for RGB+Flow)
+        input_channels: Number of input channels (3 for RGB, 7 for RGB+COF)
         pretrained_backbone: Use pretrained EfficientNet-B0
         freeze_backbone: Freeze backbone weights initially
         device: Device to place model on
@@ -321,6 +453,12 @@ def build_model(
             pretrained_backbone=pretrained_backbone,
             freeze_backbone=freeze_backbone,
         )
+    elif model_type == "3d_resnet_ms":
+        model = CASME2_3DResNetMS(
+            num_classes=num_classes,
+            temporal_length=temporal_length,
+            input_channels=input_channels,
+        )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
@@ -335,21 +473,21 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Test 3D-CNN-LSTM model
+    # Test multi-scale 3D-ResNet model
     model = build_model(
-        model_type="3d_cnn_lstm",
+        model_type="3d_resnet_ms",
         num_classes=5,
         temporal_length=12,
-        input_channels=4,
+        input_channels=7,
         device=device
     )
     
-    print(f"Model type: 3D-CNN-LSTM")
+    print(f"Model type: 3D-ResNet-MS")
     print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     
     # Test forward pass
-    batch = torch.randn(2, 12, 4, 224, 224).to(device)
+    batch = torch.randn(2, 12, 7, 224, 224).to(device)
     output = model(batch)
     print(f"\nInput shape: {batch.shape}")
     print(f"Output shape: {output.shape}")
@@ -364,7 +502,7 @@ if __name__ == "__main__":
         model_type="3d_cnn",
         num_classes=5,
         temporal_length=12,
-        input_channels=4,
+        input_channels=7,
         device=device
     )
     

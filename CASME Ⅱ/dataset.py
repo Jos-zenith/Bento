@@ -16,6 +16,7 @@ from preprocessing import (
     FrameSequenceProcessor, 
     AugmentationPipeline
 )
+from config import Config
 
 
 class CASME2Dataset(Dataset):
@@ -230,7 +231,7 @@ class CASME2Dataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         """
         Returns:
-            frames: Tensor of shape (T, C, H, W) where C=3 (RGB) or C=4 (RGB+Flow)
+            frames: Tensor of shape (T, C, H, W) where C=3 (RGB) or C=7 (RGB+COF)
             label: Emotion class index
         """
         sample = self.samples[idx]
@@ -250,46 +251,29 @@ class CASME2Dataset(Dataset):
             # Return dummy data
             frames = np.zeros((self.temporal_length, *self.frame_size, 3), dtype=np.float32)
         
-        # Sample temporal frames
-        frames = self.frame_processor.sample_frames(frames, self.temporal_length)
-        
         # Apply augmentation
         if self.use_augmentation and self.augmentor is not None:
             frames = self.augmentor.apply(frames)
         
-        # Normalize frames
-        frames = self.frame_processor.normalize_frames(frames, self.img_mean, self.img_std)
-        
-        # Compute optical flow
+        # Build combined optical flow from onset-to-apex and apex-to-offset phases
         if self.use_optical_flow:
-            flows = []
-            for i in range(len(frames) - 1):
-                flow = self.flow_processor.compute_flow(
-                    (frames[i] * 255).astype(np.uint8),  # Convert back for flow computation
-                    (frames[i + 1] * 255).astype(np.uint8)
-                )
-                flow_mag = self.flow_processor.normalize_flow(flow)
-                # Ensure flow_mag has shape (H, W, 1)
-                if len(flow_mag.shape) == 2:
-                    flow_mag = np.expand_dims(flow_mag, axis=-1)
-                flows.append(flow_mag)
-            
-            # Pad last frame
-            if flows:
-                last_flow = flows[-1]
-            else:
-                last_flow = np.zeros((*self.frame_size, 1), dtype=np.float32)
-            flows.append(last_flow)
-            flows = np.array(flows)  # Shape: (T, H, W, 1)
-            
-            # Stack RGB + Flow: (T, H, W, 4)
-            frames = np.concatenate([frames, flows], axis=-1)
+            frames, cof = self.flow_processor.compute_combined_optical_flow(
+                frames,
+                sample['onset_frame'],
+                sample['apex_frame'],
+                sample['offset_frame'],
+                self.temporal_length,
+            )
+            frames = self.frame_processor.normalize_frames(frames, self.img_mean, self.img_std)
+            frames = np.concatenate([frames, cof], axis=-1)
+        else:
+            frames = self.frame_processor.sample_frames(frames, self.temporal_length)
+            frames = self.frame_processor.normalize_frames(frames, self.img_mean, self.img_std)
         
         # Convert to PyTorch format: (T, C, H, W)
         frames = torch.from_numpy(frames).permute(0, 3, 1, 2).float()
         
         # Get label
-        from config import Config
         label = Config.CLASS_MAPPING.get(emotion, 4)
         
         return frames, label
